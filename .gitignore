@@ -23,3 +23,5 @@ target/site/
 Thumbs.db
 
 ERRORES_RESUMEN.md
+
+jwt_private_test.pem

@@ -23,7 +23,20 @@
         <springdoc.version>2.6.0</springdoc.version>
         <jacoco.version>0.8.12</jacoco.version>
         <testcontainers.version>1.20.1</testcontainers.version>
+        <spring-cloud-aws.version>3.1.1</spring-cloud-aws.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <!-- Web -->
@@ -78,6 +91,12 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
 
+        <!-- AWS SQS (consumo de eventos del microservicio de Incidentes vía SNS -> SQS) -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+        </dependency>
+
         <!-- Actuator + Micrometer (Prometheus) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -99,6 +118,7 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+            <version>1.18.42</version>
             <optional>true</optional>
         </dependency>
 

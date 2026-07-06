@@ -81,8 +81,10 @@ DB_PASSWORD=una_contrasena_segura_aqui
 # Servidor
 SERVER_PORT=8080
 
-# JWT — mínimo 32 caracteres
-JWT_SECRET=mi_secreto_super_seguro_de_32_caracteres_minimo
+# JWT — RS256. El API Gateway firma con su llave privada; este microservicio
+# solo valida la firma con la llave pública montada por volumen.
+JWT_ALGORITHM=RS256
+JWT_PUBLIC_KEY_PATH=/app/secrets/jwt_public.pem
 
 # Kafka
 KAFKA_EXTERNAL_PORT=9092
@@ -97,9 +99,12 @@ KAFKA_TOPIC_VEHICULOS_SOLICITAR=fleetops.vehiculos.solicitar
 KAFKA_TOPIC_VEHICULOS_LIBERAR=fleetops.vehiculos.liberar
 KAFKA_TOPIC_VEHICULOS_CONFIRMADO=fleetops.asignaciones.vehiculo.confirmado
 KAFKA_TOPIC_VEHICULOS_FALLIDO=fleetops.asignaciones.vehiculo.fallido
-KAFKA_TOPIC_INCIDENTES_FALLA=fleetops.incidentes.falla.mecanica
 KAFKA_TOPIC_ASIGNACION_COMPLETADA=fleetops.asignaciones.completada
 KAFKA_TOPIC_ASIGNACION_FALLIDA=fleetops.asignaciones.fallida
+
+# AWS SQS — Incidentes corre en otra instancia AWS y publica vía SNS -> SQS
+AWS_REGION=us-east-1
+SQS_QUEUE_INCIDENTES_FALLA=fleetops-asignaciones-incidentes-falla-mecanica
 ```
 
 > El archivo `.env` está en `.gitignore` y nunca se sube al repositorio. Solo `.env.example` (sin valores reales) se versiona.
@@ -153,9 +158,24 @@ mvn spring-boot:run
 
 ## 5. Cómo probar que funciona
 
-### Obtener un token JWT
+### Obtener un token JWT (RS256)
 
-Los endpoints están protegidos. Para pruebas, genera un token en [jwt.io](https://jwt.io) usando el mismo `JWT_SECRET` que pusiste en el `.env`.
+Los tokens ya no se generan en este microservicio: los emite y firma el **API Gateway** con su llave privada RSA. Este servicio solo tiene la llave **pública** (`secrets/jwt_public.pem`, montada por volumen en Docker Compose) y la usa para validar la firma — nunca ve ni necesita la llave privada.
+
+Para probar localmente sin levantar el Gateway, genera tu propio par de llaves de prueba, reemplaza la llave pública del repo y firma un token con la privada:
+
+```bash
+# 1. Generar un par de llaves RSA de prueba (no comitear la privada)
+openssl genrsa -out jwt_private_test.pem 2048
+openssl rsa -in jwt_private_test.pem -pubout -out secrets/jwt_public.pem
+
+# 2. Reiniciar el contenedor para que tome la llave pública nueva
+docker compose up --build asignaciones
+```
+
+Con `jwt_private_test.pem` puedes firmar un token RS256 de prueba, por ejemplo pegando su contenido en el panel "Private Key" del modo RS256 de [jwt.io](https://jwt.io), o con cualquier librería JWT que soporte RS256 (todas la aceptan: solo necesita `exp` en el futuro).
+
+> Si el token está expirado, tiene una firma que no corresponde a `secrets/jwt_public.pem`, o falta el header `Authorization`, el microservicio responde `401 Unauthorized` en cualquier ruta que no sea pública (`/actuator/**`, `/swagger-ui/**`, `/v3/api-docs/**`).
 
 ### Crear una asignación
 
@@ -167,7 +187,7 @@ curl -X POST http://localhost:8080/asignaciones \
     "tipoVehiculo": "CAMION",
     "fechaInicio": "2026-07-01",
     "fechaFin": "2026-07-10",
-    "emailContacto": "coordinador@fleetops.com"
+    "kilometros": "100"
   }'
 ```
 
@@ -214,7 +234,7 @@ Para probar el flujo coreografiado sin tener los otros microservicios levantados
 # Entrar al contenedor de Kafka
 docker exec -it fleetops-kafka bash
 
-# Simular que Vehículos confirmó la asignación
+# Simular que Vehículos confirmó la asignación - Esto publica vehiculos 
 kafka-console-producer \
   --bootstrap-server localhost:29092 \
   --topic fleetops.asignaciones.vehiculo.confirmado
@@ -222,28 +242,41 @@ kafka-console-producer \
 # Pegar este JSON y presionar Enter:
 {"idAsignacion":"UUID_DE_TU_ASIGNACION","idVehiculo":"UUID_DEL_VEHICULO"}
 #Ejemplo para las longitudes de los UUIDs:
-{"idAsignacion":"3fabc3ac-1067-4097-b369-0551b042f76b","idVehiculo":"11111111-1111-1111-1111-111211111111"}
+{"idAsignacion":"ee58ec8b-3c55-47e0-b38f-154d29cf4dd2","idVehiculo":"11111111-1111-1111-1111-111211111111"}
+
+#----------------
 # Simular que Vehículos rechazó la solicitud
 kafka-console-producer \
   --bootstrap-server localhost:29092 \
   --topic fleetops.asignaciones.vehiculo.fallido
 
 # Pegar este JSON:
-{"idAsignacion":"UUID_DE_TU_ASIGNACION","motivo":"Sin vehículos disponibles del tipo CAMION"}
-
-# Simular una falla mecánica desde Incidentes
-kafka-console-producer \
-  --bootstrap-server localhost:29092 \
-  --topic fleetops.incidentes.falla.mecanica
-
-# Pegar este JSON:
-{"idIncidente":"UUID","idVehiculo":"UUID","idAsignacion":"UUID","descripcion":"Motor averiado"}
-
-# Ver todos los mensajes que Asignaciones está publicando
+{"idAsignacion":"62e75a63-ff79-4809-90ec-83f166d1e24c","motivo":"Sin vehículos disponibles del tipo CAMION"}
+#---------------
+# Simular una falla mecánica desde Incidentes.
+# Incidentes ya no publica en Kafka: publica en un tópico SNS que hace fan-out
+# hacia la cola SQS que consume este servicio. LocalStack (levantado por
+# docker-compose) simula ese SNS/SQS localmente; awslocal envuelve el mensaje
+# en el sobre de notificación SNS automáticamente, igual que en AWS real.
+docker exec -it fleetops-localstack awslocal sns publish \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:fleetops-incidentes-falla-mecanica \
+  --message '{
+    "incident_id": "INC-MEC-GRV-20260621-a3f9",
+    "driver_id": "CONDUCTOR-001",
+    "vehicle_id": "ABC-123",
+    "incident_type": "MECANICO",
+    "severity": "GRAVE",
+    "description": "Falla en los frenos.",
+    "event_date": "2026-06-21T22:00:01.123456"
+}'
+#-----------------
+# Ver todos los mensajes que Asignaciones está publicando - Aqui vehiculos consulta/consume las solicitudes de asignacion
 kafka-console-consumer \
   --bootstrap-server localhost:29092 \
   --topic fleetops.vehiculos.solicitar \
   --from-beginning
+#en este topic habra un json así:
+{"idSaga":"UUID","idAsignacion":"UUID","tipoVehiculo":"CAMION","fechaInicio":"2026-07-01","fechaFin":"2026-07-10", "kilometros":"100"}
   
 #Ver todas las solictudes completadas
 kafka-console-consumer \  --bootstrap-server localhost:29092 \ --topic fleetops.asignaciones.completada \--from-beginning 
@@ -348,9 +381,10 @@ Ningún test conecta a bases de datos reales ni a Kafka real — todo se simula 
 ### Flujo 3 — Falla mecánica reportada por Incidentes
 
 ```
-[Incidentes] detecta falla → publica FallaMecanicaEvent
+[Incidentes] detecta falla → publica en SNS → fan-out a SQS
 
-[KafkaIncidentesConsumer]           driving adapter Kafka
+[SqsIncidentesConsumer]             driving adapter SQS
+    │ deserializa el sobre SNS (Body) → toma "Message" → FallaMecanicaMessage
     │ convierte FallaMecanicaMessage → FallaMecanicaRecibidaEvent (domain event)
     ▼
 [ProcesarFallaMecanicaUseCase]      interface (puerto in)
@@ -388,7 +422,8 @@ fleetops-asignaciones/
 │                         ├── persistence/  Adaptadores JPA/PostgreSQL
 │                         ├── messaging/    Adaptadores Kafka (consumers + publisher)
 │                         ├── web/          Controllers REST + DTOs HTTP
-│                         └── config/       Spring Security, Swagger
+│                         ├── config/       SecurityConfig (cadena de filtros), Swagger
+│                         └── security/     Validación JWT RS256: decoder, filtro, entry point
 │
 ├── src/main/resources/
 │   ├── application.yml        Configuración (todo usa ${VARIABLE})
@@ -396,6 +431,7 @@ fleetops-asignaciones/
 │
 ├── src/test/                  Tests unitarios con Mockito
 │
+├── secrets/jwt_public.pem     Llave pública RSA para validar JWT (montada por volumen)
 ├── docker-compose.yml         PostgreSQL + Zookeeper + Kafka + Microservicio
 ├── Dockerfile                 Imagen del microservicio (multi-stage, non-root)
 ├── pom.xml                    Dependencias Maven
@@ -414,7 +450,8 @@ fleetops-asignaciones/
 | `pom.xml` | Define todas las dependencias (Spring Boot 3.3, Kafka, JPA, Flyway, JWT, Swagger, JaCoCo) y la configuracion de Maven. Incluye el plugin de JaCoCo configurado para exigir 80% de cobertura en la logica relevante de `domain` y `application`, excluyendo clases sin logica de negocio directa. |
 | `docker-compose.yml` | Describe los cuatro servicios: Zookeeper (requerido por Kafka), Kafka con soporte para transacciones, PostgreSQL con volumen persistente, y el microservicio de Asignaciones. Todos con healthchecks y red interna `fleetops-net`. |
 | `Dockerfile` | Construcción en dos etapas: primera etapa compila con Maven y produce el JAR; segunda etapa copia solo el JAR a una imagen JRE liviana y lo corre como usuario `fleetops` (no-root). |
-| `.env.example` | Plantilla con las 14 variables que necesita el proyecto, cada una con un comentario explicativo. Copiar a `.env` y completar con valores reales. |
+| `.env.example` | Plantilla con las variables que necesita el proyecto, cada una con un comentario explicativo. Copiar a `.env` y completar con valores reales. |
+| `secrets/jwt_public.pem` | Llave pública RSA (PEM) usada para validar la firma de los JWT emitidos por el API Gateway. Se monta en el contenedor vía volumen (`docker-compose.yml`) en la ruta que apunta `JWT_PUBLIC_KEY_PATH`. |
 | `.gitignore` | Excluye `.env`, `target/`, `*.log` y archivos de IDE del control de versiones. |
 
 ---
@@ -457,7 +494,7 @@ POJOs puros (Java records) que representan hechos del dominio. No saben nada de 
 | `VehiculoLiberadoEvent.java` | Se publica al procesar una falla mecánica. Le dice a Vehículos que libere un vehículo específico. Contiene `idSaga` e `idVehiculo`. |
 | `AsignacionCompletadaEvent.java` | Se publica cuando la asignación termina exitosamente. Útil para auditoría y otros servicios que quieran reaccionar. Contiene los IDs de la saga, asignación, vehículo y conductor. |
 | `AsignacionFallidaEvent.java` | Se publica cuando la asignación falla. Contiene `idSaga`, `idAsignacion` y el motivo. |
-| `FallaMecanicaRecibidaEvent.java` | Representa una falla mecánica que llegó desde Incidentes. Es la traducción del mensaje Kafka al lenguaje del dominio (anti-corruption layer). Contiene `idIncidente`, `idVehiculo`, `idAsignacion`, `descripcion`. |
+| `FallaMecanicaRecibidaEvent.java` | Representa una falla mecánica que llegó desde Incidentes (vía SNS -> SQS). Es la traducción del mensaje al lenguaje del dominio (anti-corruption layer). Contiene `idIncidente`, `idVehiculo`, `idAsignacion`, `descripcion`. |
 
 ---
 
@@ -532,7 +569,7 @@ Todo el código relacionado con Kafka.
 | Archivo | Qué hace |
 |---------|----------|
 | `KafkaVehiculosConsumer.java` | Driving adapter que escucha dos topics separados: `vehiculos-confirmado` llama a `ProcesarVehiculoAsignadoUseCase`; `vehiculos-fallido` llama a `ProcesarVehiculoRechazadoUseCase`. ACK manual: el offset solo avanza si el procesamiento fue exitoso. Si falla, Kafka reintenta automáticamente. |
-| `KafkaIncidentesConsumer.java` | Driving adapter que escucha `incidentes.falla.mecanica`. Convierte el `FallaMecanicaMessage` (DTO de Kafka) al `FallaMecanicaRecibidaEvent` (domain event) y llama a `ProcesarFallaMecanicaUseCase`. ACK manual por la misma razón. |
+| `SqsIncidentesConsumer.java` | Driving adapter que escucha la cola SQS suscrita al tópico SNS de Incidentes. El Body es un sobre de notificación SNS: deserializa el sobre, toma el campo `Message` y lo vuelve a deserializar a `FallaMecanicaMessage`, que convierte a `FallaMecanicaRecibidaEvent` (domain event) y pasa a `ProcesarFallaMecanicaUseCase`. ACK manual: el mensaje solo se borra de la cola si el procesamiento fue exitoso. |
 
 #### `dto/`
 
@@ -540,7 +577,8 @@ Mensajes del broker — distintos a los DTOs HTTP para que un cambio en el contr
 
 | Archivo | Qué hace |
 |---------|----------|
-| `FallaMecanicaMessage.java` | Mensaje que llega desde Incidentes. Campos: `idIncidente`, `idVehiculo`, `idAsignacion`, `descripcion`. |
+| `FallaMecanicaMessage.java` | Payload real del incidente (contenido del campo `Message` del sobre SNS). Campos: `idIncidente`, `idVehiculo`, `idAsignacion`, `descripcion`. |
+| SnsNotificationEnvelope.java | Sobre de notificación SNS que llega como Body del mensaje SQS. Campos: Type, MessageId, TopicArn, Message (el FallaMecanicaMessage serializado como string), Timestamp. |
 | `VehiculoConfirmadoMessage.java` | Mensaje que llega desde Vehículos confirmando la asignación. Campos: `idAsignacion`, `idVehiculo`. |
 | `VehiculoRechazadoMessage.java` | Mensaje que llega desde Vehículos rechazando la solicitud. Campos: `idAsignacion`, `motivo`. |
 
@@ -568,8 +606,20 @@ Mensajes del broker — distintos a los DTOs HTTP para que un cambio en el contr
 
 | Archivo | Qué hace |
 |---------|----------|
-| `SecurityConfig.java` | Configura Spring Security 6. Protege `/asignaciones` y `/asignaciones/saga/**` con JWT. Deja públicos `/swagger-ui/**`, `/v3/api-docs/**` y `/actuator/**`. Sin sesiones (stateless). |
+| `SecurityConfig.java` | Configura Spring Security 6: deja públicos `/actuator/**`, `/swagger-ui/**` y `/v3/api-docs/**`; el resto de rutas exige autenticación. Registra `JwtAuthenticationFilter` antes de `UsernamePasswordAuthenticationFilter` y usa `JwtAuthenticationEntryPoint` para responder 401 en peticiones sin token válido. Sin sesiones (stateless). |
 | `SwaggerConfig.java` | Configura el título y descripción que aparece en Swagger UI. |
+
+---
+
+### `infrastructure/security/`
+
+Validación de JWT emitidos por el API Gateway (RS256). No interviene en Kafka ni en SQS — solo en peticiones HTTP que llegan al contenedor de servlets.
+
+| Archivo | Qué hace |
+|---------|----------|
+| `JwtDecoderConfig.java` | Lee la llave pública PEM desde `JWT_PUBLIC_KEY_PATH`, la convierte a `RSAPublicKey` y construye el `JwtDecoder` (Nimbus) con el algoritmo indicado por `JWT_ALGORITHM`. Falla rápido al arrancar si el algoritmo no es reconocido o la llave no se puede leer. |
+| `JwtAuthenticationFilter.java` | `OncePerRequestFilter` que extrae el Bearer token del header `Authorization`, lo decodifica con el `JwtDecoder` (valida firma y expiración) y, si es válido, autentica la petición en el `SecurityContext`. Si no hay header, deja pasar sin autenticar (la ruta pública o el `authorizeHttpRequests` decide). Si el token es inválido o expiró, responde 401 vía `JwtAuthenticationEntryPoint` sin continuar la cadena. |
+| `JwtAuthenticationEntryPoint.java` | Punto único de respuesta 401 en JSON, usado tanto por el filtro (token inválido) como por Spring Security (ruta protegida sin ningún token). |
 
 ---
 
@@ -598,6 +648,8 @@ Todos los tests usan Mockito. Ninguno conecta a base de datos real ni a Kafka re
 | `ReasignacionServiceTest.java` | Verifica la reacción a falla mecánica: conductor liberado, SAGA en `PENDIENTE_LIBERACION`, `VehiculoLiberadoEvent` publicado para que Vehículos reaccione. |
 | `KafkaVehiculosConsumerTest.java` | Verifica que el consumer delega correctamente según el topic: confirmación va a `ProcesarVehiculoAsignadoUseCase`, rechazo va a `ProcesarVehiculoRechazadoUseCase`. Verifica que el ACK solo se hace si el procesamiento fue exitoso. |
 | `AsignacionControllerTest.java` | Verifica los endpoints HTTP con MockMvc: request válido retorna 202, email inválido retorna 400. |
+| `JwtDecoderConfigTest.java` | Genera un par de llaves RSA de prueba y firma tokens con `nimbus-jose-jwt` para verificar que el decoder acepta un token válido, y rechaza uno expirado o firmado con otra llave privada. |
+| `JwtAuthenticationFilterTest.java` | Verifica con mocks que el filtro autentica y continúa la cadena con un token válido, responde 401 sin continuar la cadena con un token inválido/expirado, y deja pasar sin autenticar cuando no hay header `Authorization`. |
 
 ---
 
@@ -621,8 +673,16 @@ Cada servicio implementa exactamente un use case. Hay dos razones: primero, evit
 
 **¿Cómo pruebo la coreografía si no tengo los microservicios de Vehículos e Incidentes?**
 
-Usa el producer de consola de Kafka para publicar manualmente los eventos de respuesta. El microservicio de Asignaciones no sabe si el evento vino de un microservicio real o de una consola — solo lee el mensaje del topic. Los comandos exactos están en la sección 5 de esta guía.
+Usa el producer de consola de Kafka para simular a Vehículos, y `awslocal sns publish` contra LocalStack para simular a Incidentes (que en AWS real publica en SNS desde otra cuenta/instancia). El microservicio de Asignaciones no sabe si el evento vino de un microservicio real o de una consola/CLI — solo lee el mensaje del topic o de la cola SQS. Los comandos exactos están en la sección 5 de esta guía.
 
 **¿Qué pasa si Kafka no está disponible cuando se crea una asignación?**
 
 Como la publicación del evento ocurre dentro de la misma transacción Kafka, si Kafka no está disponible la transacción completa hace rollback — incluyendo los cambios en PostgreSQL. El conductor vuelve a estar disponible y la asignación no se guarda. El cliente recibe un error 500. Esto es diferente al modelo anterior con OutboxWorker, donde el commit de DB sí ocurría y el worker reintentaba la publicación más tarde.
+
+**¿Por qué RS256 (asimétrico) y no HS256 (secreto compartido)?**
+
+Con HS256 todos los microservicios que validan el token necesitarían conocer el mismo secreto que lo firmó — cualquiera de ellos comprometido expone la capacidad de firmar tokens válidos para toda la plataforma. Con RS256 solo el API Gateway tiene la llave privada y firma; este microservicio (y cualquier otro) solo necesita la llave pública correspondiente para validar, sin poder emitir tokens él mismo. Es el modelo estándar cuando hay un emisor central (el Gateway) y múltiples validadores (los microservicios).
+
+**¿Este filtro JWT afecta a los eventos de Kafka o a los mensajes de SQS?**
+
+No. `JwtAuthenticationFilter` es un `OncePerRequestFilter` registrado en la cadena de Spring Security, que solo intercepta peticiones HTTP que llegan al contenedor de servlets (Tomcat embebido). Los consumers de Kafka (`KafkaVehiculosConsumer`) y de SQS (`SqsIncidentesConsumer`) reciben mensajes directamente del broker/cola, fuera de esa cadena — nunca pasan por este filtro ni por `SecurityConfig`.

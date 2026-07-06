@@ -22,8 +22,16 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+
+  # Región AWS del microservicio. Credenciales se resuelven con el proveedor por defecto
+  # (rol IAM de la instancia/tarea en AWS; variables de entorno o ~/.aws/credentials en local).
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION}
+
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:8082}
 
 management:
   endpoints:
@@ -59,6 +67,10 @@ asignaciones:
       vehiculos-liberar:     ${KAFKA_TOPIC_VEHICULOS_LIBERAR:fleetops.vehiculos.liberar}
       vehiculos-confirmado:  ${KAFKA_TOPIC_VEHICULOS_CONFIRMADO:fleetops.asignaciones.vehiculo.confirmado}
       vehiculos-fallido:     ${KAFKA_TOPIC_VEHICULOS_FALLIDO:fleetops.asignaciones.vehiculo.fallido}
-      incidentes-falla-mecanica: ${KAFKA_TOPIC_INCIDENTES_FALLA:fleetops.incidentes.falla.mecanica}
       asignacion-completada: ${KAFKA_TOPIC_ASIGNACION_COMPLETADA:fleetops.asignaciones.completada}
       asignacion-fallida:    ${KAFKA_TOPIC_ASIGNACION_FALLIDA:fleetops.asignaciones.fallida}
+
+  # Incidentes publica en un tópico SNS que hace fan-out hacia esta cola SQS (fuera de este repo).
+  sqs:
+    queues:
+      queue_assignations: ${SQS_QUEUE_INCIDENTES_FALLA:queue_assignations}
