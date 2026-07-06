@@ -10,7 +10,6 @@ volumes:
 
 services:
 
-  # ── Zookeeper ─────────────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: fleetops-zookeeper
@@ -25,7 +24,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Kafka ─────────────────────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     container_name: fleetops-kafka
@@ -41,7 +39,6 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
-      # Escucha en todas las interfaces
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -54,10 +51,7 @@ services:
       timeout: 10s
       retries: 5
 
-  # ── PostgreSQL ────────────────────────────────────────────────────────────
-  # LocalStack (simula SNS/SQS de AWS para desarrollo local).
-  # En AWS real, Incidentes y Asignaciones corren en cuentas/instancias separadas
-  # y se comunican por un topico SNS real con fan-out a esta cola SQS.
+
   localstack:
     image: localstack/localstack:3.7
     container_name: fleetops-localstack
@@ -93,7 +87,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Microservicio Asignaciones ────────────────────────────────────────────
   asignaciones:
     build:
       context: .
@@ -101,8 +94,6 @@ services:
     container_name: fleetops-asignaciones
     networks:
       - fleetops-net
-    volumes:
-      - ./secrets/jwt_public.pem:/app/secrets/jwt_public.pem:ro
     ports:
       - "${SERVER_PORT:-8020}:8020"
     depends_on:
@@ -128,8 +119,6 @@ services:
       KAFKA_TOPIC_VEHICULOS_FALLIDO: ${KAFKA_TOPIC_VEHICULOS_FALLIDO:-fleetops.asignaciones.vehiculo.fallido}
       KAFKA_TOPIC_ASIGNACION_COMPLETADA: ${KAFKA_TOPIC_ASIGNACION_COMPLETADA:-fleetops.asignaciones.completada}
       KAFKA_TOPIC_ASIGNACION_FALLIDA: ${KAFKA_TOPIC_ASIGNACION_FALLIDA:-fleetops.asignaciones.fallida}
-      # AWS SQS: en AWS real, sin endpoint override, con credenciales por rol IAM.
-      # Aqui apuntamos a LocalStack para poder correr todo el flujo localmente.
       AWS_REGION: ${AWS_REGION:-us-east-1}
       SQS_QUEUE_INCIDENTES_FALLA: ${SQS_QUEUE_INCIDENTES_FALLA:-queue_assignations}
 

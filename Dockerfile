@@ -22,10 +22,16 @@ RUN addgroup -S fleetops && adduser -S fleetops -G fleetops
 
 WORKDIR /app
 
+RUN mkdir -p /app/secrets && chown fleetops:fleetops /app/secrets
 # Copiamos el JAR final generado en la etapa anterior
 COPY --from=builder /build/target/app.jar app.jar
 
-RUN chown fleetops:fleetops app.jar
+
+COPY secrets/jwt_public.pem /app/secrets/jwt_public.pem
+
+
+RUN chown fleetops:fleetops /app/secrets/jwt_public.pem && \
+    chmod 644 /app/secrets/jwt_public.pem
 
 USER fleetops
 
