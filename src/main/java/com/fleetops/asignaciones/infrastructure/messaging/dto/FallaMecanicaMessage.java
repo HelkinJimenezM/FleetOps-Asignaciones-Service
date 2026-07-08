@@ -15,7 +15,7 @@ import java.util.UUID;
 public record FallaMecanicaMessage(
         @JsonProperty("incident_id")
         @JsonAlias({"incidentId"})
-        UUID incidentId,
+        String incidentId,
 
         @JsonProperty("vehicle_id")
         @JsonAlias({"vehicleId"})

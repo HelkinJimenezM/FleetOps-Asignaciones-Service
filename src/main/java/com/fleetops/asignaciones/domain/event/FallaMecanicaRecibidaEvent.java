@@ -4,7 +4,7 @@ import java.util.Date;
 import java.util.UUID;
 
 public record FallaMecanicaRecibidaEvent(
-        UUID incident_id,
+        String incident_id,
         UUID vehicle_id,
         String description,
         UUID driver_id,

@@ -27,7 +27,7 @@ public class SqsIncidentesConsumer {
      * ACK manual garantiza que el mensaje solo se borra de la cola si el procesamiento fue exitoso.
      */
     @SqsListener(
-            queueNames = "${SQS_QUEUE_INCIDENTES_FALLA}",
+            queueNames = "${asignaciones.sqs.queues.queue_assignations}",
             acknowledgementMode = SqsListenerAcknowledgementMode.MANUAL
     )
     public void onFallaMecanica(String mensajeSqsBody, Acknowledgement acknowledgement) {

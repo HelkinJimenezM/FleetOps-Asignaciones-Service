@@ -57,7 +57,7 @@ class ReasignacionServiceTest {
         // Arrange
         UUID idAsignacion = UUID.randomUUID();
         UUID idVehiculo   = UUID.randomUUID();
-        UUID idIncidente  = UUID.randomUUID();
+        String idIncidente = UUID.randomUUID().toString();
 
         Conductor conductor = Conductor.builder()
                 .id(UUID.randomUUID())
@@ -142,7 +142,7 @@ class ReasignacionServiceTest {
         when(asignacionRepository.guardar(any())).thenReturn(asignacion);
 
         FallaMecanicaRecibidaEvent evento = new FallaMecanicaRecibidaEvent(
-                UUID.randomUUID(),
+                UUID.randomUUID().toString(),
                 idVehiculo,
                 "Conductor incapacitado",
                 conductorAntiguoId,
@@ -165,7 +165,7 @@ class ReasignacionServiceTest {
     @DisplayName("procesar: dado incidente no grave, no aplica compensacion")
     void procesar_dadoIncidenteNoGrave_noHaceNada() {
         FallaMecanicaRecibidaEvent evento = new FallaMecanicaRecibidaEvent(
-                UUID.randomUUID(),
+                UUID.randomUUID().toString(),
                 UUID.randomUUID(),
                 "Golpe menor",
                 UUID.randomUUID(),
@@ -185,7 +185,7 @@ class ReasignacionServiceTest {
         when(asignacionRepository.buscarPorVehiculoId(idVehiculo)).thenReturn(Optional.empty());
 
         FallaMecanicaRecibidaEvent evento = new FallaMecanicaRecibidaEvent(
-                UUID.randomUUID(), idVehiculo, "falla", UUID.randomUUID(), "MECANICO", "GRAVE", new Date());
+                UUID.randomUUID().toString(), idVehiculo, "falla", UUID.randomUUID(), "MECANICO", "GRAVE", new Date());
 
         assertThatThrownBy(() -> service.procesar(evento))
                 .isInstanceOf(NoSuchElementException.class);
@@ -214,7 +214,7 @@ class ReasignacionServiceTest {
         when(conductorRepository.buscarDisponiblePorTipoVehiculo(any())).thenReturn(Optional.empty());
 
         FallaMecanicaRecibidaEvent evento = new FallaMecanicaRecibidaEvent(
-                UUID.randomUUID(),
+                UUID.randomUUID().toString(),
                 idVehiculo,
                 "Conductor incapacitado",
                 idConductor,
